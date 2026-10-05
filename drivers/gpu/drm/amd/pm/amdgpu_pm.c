@@ -3771,7 +3771,11 @@ static umode_t hwmon_attributes_visible(struct kobject *kobj,
 	    attr == &sensor_dev_attr_power1_cap_min.dev_attr.attr ||
 	    attr == &sensor_dev_attr_power1_cap.dev_attr.attr ||
 	    attr == &sensor_dev_attr_power1_cap_default.dev_attr.attr) {
-		if (adev->family == AMDGPU_FAMILY_SI ||
+		/* Oland exposes power1_cap via the OverDrive backend, so
+		 * exempt it from the SI-wide hiding of these attributes.
+		 */
+		if ((adev->family == AMDGPU_FAMILY_SI &&
+		     adev->asic_type != CHIP_OLAND) ||
 		    ((adev->flags & AMD_IS_APU) && gc_ver != IP_VERSION(10, 3, 1) &&
 		     (gc_ver != IP_VERSION(9, 4, 3) && gc_ver != IP_VERSION(9, 4, 4))) ||
 		    (amdgpu_sriov_vf(adev) && gc_ver == IP_VERSION(11, 0, 3)))

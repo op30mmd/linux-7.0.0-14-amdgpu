@@ -29,6 +29,16 @@
 #include <drm/amdgpu_drm.h>
 #include "smumgr.h"
 
+MODULE_FIRMWARE("amdgpu/tahiti_smc.bin");
+MODULE_FIRMWARE("amdgpu/pitcairn_smc.bin");
+MODULE_FIRMWARE("amdgpu/pitcairn_k_smc.bin");
+MODULE_FIRMWARE("amdgpu/verde_smc.bin");
+MODULE_FIRMWARE("amdgpu/verde_k_smc.bin");
+MODULE_FIRMWARE("amdgpu/oland_smc.bin");
+MODULE_FIRMWARE("amdgpu/oland_k_smc.bin");
+MODULE_FIRMWARE("amdgpu/hainan_smc.bin");
+MODULE_FIRMWARE("amdgpu/hainan_k_smc.bin");
+MODULE_FIRMWARE("amdgpu/banks_k_2_smc.bin");
 MODULE_FIRMWARE("amdgpu/bonaire_smc.bin");
 MODULE_FIRMWARE("amdgpu/bonaire_k_smc.bin");
 MODULE_FIRMWARE("amdgpu/hawaii_smc.bin");

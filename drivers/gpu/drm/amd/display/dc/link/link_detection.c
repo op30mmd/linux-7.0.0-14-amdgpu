@@ -359,6 +359,14 @@ static void query_dp_dual_mode_adaptor(
 			CONN_DATA_DETECT(ddc->link, type2_dongle_buf, sizeof(type2_dongle_buf),
 					"DP-DVI passive dongle %dMhz: ",
 					DP_ADAPTOR_DVI_MAX_TMDS_CLK / 1000);
+			/* Oland (DCE 6.4) 75Hz quirk, same override as at the
+			 * end of this function, needed here because this
+			 * branch returns early.
+			 */
+			if (link && link->ctx &&
+			    link->ctx->dce_version == DCE_VERSION_6_4)
+				sink_cap->max_hdmi_pixel_clock =
+					DP_ADAPTOR_OLAND_DVI_MAX_TMDS_CLK;
 			return;
 		}
 	}
@@ -451,6 +459,17 @@ static void query_dp_dual_mode_adaptor(
 		}
 		sink_cap->is_dongle_type_one = true;
 	}
+
+	/* Oland (DCE 6.4) 75Hz quirk: passive dongles without an HDMI
+	 * signature are treated as single-link DVI (165MHz), which prunes
+	 * 1920x1080@75 (174.88MHz, within the monitor's 200MHz range and
+	 * the 297MHz HW HDMI limit). Allow 200MHz on Oland.
+	 */
+	if (*dongle == DISPLAY_DONGLE_DP_DVI_DONGLE &&
+	    link && link->ctx &&
+	    link->ctx->dce_version == DCE_VERSION_6_4)
+		sink_cap->max_hdmi_pixel_clock =
+			DP_ADAPTOR_OLAND_DVI_MAX_TMDS_CLK;
 
 	return;
 }

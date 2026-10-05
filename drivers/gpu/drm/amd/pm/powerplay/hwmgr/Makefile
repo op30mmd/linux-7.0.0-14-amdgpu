@@ -39,6 +39,11 @@ HARDWARE_MGR = hwmgr.o processpptables.o \
 		vega12_baco.o smu9_baco.o tonga_baco.o polaris_baco.o fiji_baco.o \
 		ci_baco.o smu7_baco.o
 
+# SI backend relies on the CONFIG_DRM_AMDGPU_SI-only amdgpu_atombios helpers.
+HARDWARE_MGR-$(CONFIG_DRM_AMDGPU_SI) += si_hwmgr.o si_powertune.o
+HARDWARE_MGR += $(HARDWARE_MGR-y)
+
+
 AMD_PP_HWMGR = $(addprefix $(AMD_PP_PATH)/hwmgr/,$(HARDWARE_MGR))
 
 AMD_POWERPLAY_FILES += $(AMD_PP_HWMGR)

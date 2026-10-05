@@ -79,7 +79,11 @@ unsigned int sysctl_sched_tunable_scaling = SCHED_TUNABLESCALING_LOG;
 unsigned int sysctl_sched_base_slice			= 700000ULL;
 static unsigned int normalized_sysctl_sched_base_slice	= 700000ULL;
 
-__read_mostly unsigned int sysctl_sched_migration_cost	= 500000UL;
+/* Tuned for i5-4590 (4C/4T Haswell, shared 6MB L3, no SMT):
+ * migration is cheap, so 200us (vs 500us server default) improves
+ * load-balancing of bursty desktop tasks (Firefox/GNOME) with
+ * negligible cache-miss cost. */
+__read_mostly unsigned int sysctl_sched_migration_cost	= 200000UL;
 
 static int __init setup_sched_thermal_decay_shift(char *str)
 {

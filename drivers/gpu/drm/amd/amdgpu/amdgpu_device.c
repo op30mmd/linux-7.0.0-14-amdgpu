@@ -237,6 +237,95 @@ static ssize_t amdgpu_device_get_pcie_replay_count(struct device *dev,
 static DEVICE_ATTR(pcie_replay_count, 0444,
 		amdgpu_device_get_pcie_replay_count, NULL);
 
+static ssize_t amdgpu_evict_vram_show(struct device *dev,
+				      struct device_attribute *attr,
+				      char *buf)
+{
+	struct drm_device *ddev = dev_get_drvdata(dev);
+	struct amdgpu_device *adev = drm_to_adev(ddev);
+	u64 vram_used, gtt_used;
+
+	vram_used = ttm_resource_manager_used(&adev->mman.vram_mgr.manager) ?
+		ttm_resource_manager_usage(&adev->mman.vram_mgr.manager) : 0;
+	gtt_used = ttm_resource_manager_usage(&adev->mman.gtt_mgr.manager);
+
+	return sysfs_emit(buf, "vram_used: %llu MB, gtt_used: %llu MB\n",
+			  vram_used >> 20, gtt_used >> 20);
+}
+
+static ssize_t amdgpu_evict_vram_store(struct device *dev,
+				       struct device_attribute *attr,
+				       const char *buf, size_t count)
+{
+	struct drm_device *ddev = dev_get_drvdata(dev);
+	struct amdgpu_device *adev = drm_to_adev(ddev);
+	int r;
+
+	/* One-shot, upstream semantics: ignore the written value.
+	 * Persistent mode (latching + failing future VRAM allocs) broke
+	 * display on SI: DCE scanout must pin in visible VRAM, the alloc
+	 * guard turned that into -ENOMEM ("Failed to pin framebuffer"),
+	 * then gfx hung ~30s later (20261004-121716). keep_vram_pid is
+	 * still honored for pressure evictions via eviction_valuable;
+	 * use the selective idle-only sweep so an explicit evict does not
+	 * move the protected PID nor in-flight BOs.
+	 */
+	if (READ_ONCE(adev->keep_vram_pid) > 0)
+		r = amdgpu_ttm_evict_vram_for_keep_pid(adev);
+	else
+		r = amdgpu_ttm_evict_resources(adev, TTM_PL_VRAM);
+	if (r) {
+		dev_err(adev->dev, "amdgpu: evict_vram failed (%d)\n", r);
+		return r;
+	}
+
+	dev_info(adev->dev, "amdgpu: evicted unpinned VRAM to GTT\n");
+	return count;
+}
+
+static DEVICE_ATTR(evict_vram, 0644, amdgpu_evict_vram_show, amdgpu_evict_vram_store);
+
+static ssize_t amdgpu_keep_vram_pid_show(struct device *dev,
+					 struct device_attribute *attr,
+					 char *buf)
+{
+	struct drm_device *ddev = dev_get_drvdata(dev);
+	struct amdgpu_device *adev = drm_to_adev(ddev);
+
+	return sysfs_emit(buf, "%d\n", READ_ONCE(adev->keep_vram_pid));
+}
+
+static ssize_t amdgpu_keep_vram_pid_store(struct device *dev,
+					  struct device_attribute *attr,
+					  const char *buf, size_t count)
+{
+	struct drm_device *ddev = dev_get_drvdata(dev);
+	struct amdgpu_device *adev = drm_to_adev(ddev);
+	int pid, r;
+
+	r = kstrtoint(buf, 10, &pid);
+	if (r)
+		return r;
+
+	if (pid < 0)
+		return -EINVAL;
+
+	WRITE_ONCE(adev->keep_vram_pid, pid);
+	dev_info(adev->dev, "amdgpu: keep_vram_pid set to %d\n", pid);
+
+	/* Latch-only: protection applies to future pressure evictions via
+	 * amdgpu_ttm_bo_eviction_valuable() and to new VRAM allocations via
+	 * the evict_vram_enabled alloc guard. No immediate bulk evict here:
+	 * moving VRAM under executing gfx IBs caused gfxhub faults at 0x0
+	 * and CP stalls ~2-3s after store (20261004-003247/010820).
+	 * Use "echo 1 > evict_vram" for an explicit (idle-only) sweep.
+	 */
+
+	return count;
+}
+
+static DEVICE_ATTR(keep_vram_pid, 0644, amdgpu_keep_vram_pid_show, amdgpu_keep_vram_pid_store);
+
 static int amdgpu_device_attr_sysfs_init(struct amdgpu_device *adev)
 {
 	int ret = 0;
@@ -244,6 +333,13 @@ static int amdgpu_device_attr_sysfs_init(struct amdgpu_device *adev)
 	if (amdgpu_nbio_is_replay_cnt_supported(adev))
 		ret = sysfs_create_file(&adev->dev->kobj,
 					&dev_attr_pcie_replay_count.attr);
+
+	ret = sysfs_create_file(&adev->dev->kobj, &dev_attr_evict_vram.attr);
+	if (ret)
+		return ret;
+	ret = sysfs_create_file(&adev->dev->kobj, &dev_attr_keep_vram_pid.attr);
+	if (ret)
+		sysfs_remove_file(&adev->dev->kobj, &dev_attr_evict_vram.attr);
 
 	return ret;
 }
@@ -253,6 +349,9 @@ static void amdgpu_device_attr_sysfs_fini(struct amdgpu_device *adev)
 	if (amdgpu_nbio_is_replay_cnt_supported(adev))
 		sysfs_remove_file(&adev->dev->kobj,
 				  &dev_attr_pcie_replay_count.attr);
+
+	sysfs_remove_file(&adev->dev->kobj, &dev_attr_evict_vram.attr);
+	sysfs_remove_file(&adev->dev->kobj, &dev_attr_keep_vram_pid.attr);
 }
 
 static ssize_t amdgpu_sysfs_reg_state_get(struct file *f, struct kobject *kobj,

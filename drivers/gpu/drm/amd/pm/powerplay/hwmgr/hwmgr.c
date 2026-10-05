@@ -46,6 +46,10 @@ extern const struct pp_smumgr_func vega10_smu_funcs;
 extern const struct pp_smumgr_func vega12_smu_funcs;
 extern const struct pp_smumgr_func smu10_smu_funcs;
 extern const struct pp_smumgr_func vega20_smu_funcs;
+#ifdef CONFIG_DRM_AMDGPU_SI
+extern const struct pp_smumgr_func si_smu_funcs;
+extern int si_init_function_pointers(struct pp_hwmgr *hwmgr);
+#endif
 
 extern int smu10_init_function_pointers(struct pp_hwmgr *hwmgr);
 
@@ -56,6 +60,9 @@ static int fiji_set_asic_special_caps(struct pp_hwmgr *hwmgr);
 static int tonga_set_asic_special_caps(struct pp_hwmgr *hwmgr);
 static int topaz_set_asic_special_caps(struct pp_hwmgr *hwmgr);
 static int ci_set_asic_special_caps(struct pp_hwmgr *hwmgr);
+#ifdef CONFIG_DRM_AMDGPU_SI
+static int si_set_asic_special_caps(struct pp_hwmgr *hwmgr);
+#endif
 
 
 static void hwmgr_init_workload_prority(struct pp_hwmgr *hwmgr)
@@ -95,6 +102,23 @@ int hwmgr_early_init(struct pp_hwmgr *hwmgr)
 	adev = hwmgr->adev;
 
 	switch (hwmgr->chip_family) {
+#ifdef CONFIG_DRM_AMDGPU_SI
+	case AMDGPU_FAMILY_SI:
+		adev->pm.pp_feature &= ~PP_GFXOFF_MASK;
+		hwmgr->smumgr_funcs = &si_smu_funcs;
+		si_set_asic_special_caps(hwmgr);
+		hwmgr->feature_mask &= ~(PP_VBI_TIME_SUPPORT_MASK |
+					 PP_ENABLE_GFX_CG_THRU_SMU |
+					 PP_GFXOFF_MASK);
+		hwmgr->pp_table_version = PP_TABLE_V0;
+		/* Oland-first: OD preserved from legacy si_dpm.c, so keep
+		 * od_enabled true here; si_hwmgr_backend_init also sets it.
+		 * Other SI dies inherit until per-ASIC validation.
+		 */
+		hwmgr->od_enabled = true;
+		si_init_function_pointers(hwmgr);
+		break;
+#endif
 	case AMDGPU_FAMILY_CI:
 		adev->pm.pp_feature &= ~PP_GFXOFF_MASK;
 		hwmgr->smumgr_funcs = &ci_smu_funcs;
@@ -564,3 +588,27 @@ int ci_set_asic_special_caps(struct pp_hwmgr *hwmgr)
 			PHM_PlatformCaps_EngineSpreadSpectrumSupport);
 	return 0;
 }
+
+#ifdef CONFIG_DRM_AMDGPU_SI
+static int si_set_asic_special_caps(struct pp_hwmgr *hwmgr)
+{
+	/* SI (SMC6) has no SQ/DB/TD/TCP ramping like CI; same spread-spectrum
+	 * caps as CI. UVD/VCE power-gating is handled per-state by the SMC,
+	 * not via PowerPlay handshake, so leave those caps as-is until the
+	 * si_dpm.c powergate port lands. Hainan has no VCE block.
+	 */
+	phm_cap_unset(hwmgr->platform_descriptor.platformCaps,
+			PHM_PlatformCaps_SQRamping);
+	phm_cap_unset(hwmgr->platform_descriptor.platformCaps,
+			PHM_PlatformCaps_DBRamping);
+	phm_cap_unset(hwmgr->platform_descriptor.platformCaps,
+			PHM_PlatformCaps_TDRamping);
+	phm_cap_unset(hwmgr->platform_descriptor.platformCaps,
+			PHM_PlatformCaps_TCPRamping);
+	phm_cap_set(hwmgr->platform_descriptor.platformCaps,
+			PHM_PlatformCaps_MemorySpreadSpectrumSupport);
+	phm_cap_set(hwmgr->platform_descriptor.platformCaps,
+			PHM_PlatformCaps_EngineSpreadSpectrumSupport);
+	return 0;
+}
+#endif

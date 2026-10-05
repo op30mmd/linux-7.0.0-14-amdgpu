@@ -252,6 +252,62 @@ static int amdgpu_cgs_get_firmware_info(struct cgs_device *cgs_device,
 
 		if (!adev->pm.fw) {
 			switch (adev->asic_type) {
+			/* SI: same device/revision quirks as legacy
+			 * si_dpm_init_microcode() so PowerPlay picks the
+			 * identical SMC image.
+			 */
+			case CHIP_TAHITI:
+				strscpy(fw_name, "amdgpu/tahiti_smc.bin");
+				break;
+			case CHIP_PITCAIRN:
+				if ((adev->pdev->revision == 0x81) &&
+				    ((adev->pdev->device == 0x6810) ||
+				     (adev->pdev->device == 0x6811)))
+					strscpy(fw_name, "amdgpu/pitcairn_k_smc.bin");
+				else
+					strscpy(fw_name, "amdgpu/pitcairn_smc.bin");
+				break;
+			case CHIP_VERDE:
+				if (((adev->pdev->device == 0x6820) &&
+				     ((adev->pdev->revision == 0x81) ||
+				      (adev->pdev->revision == 0x83))) ||
+				    ((adev->pdev->device == 0x6821) &&
+				     ((adev->pdev->revision == 0x83) ||
+				      (adev->pdev->revision == 0x87))) ||
+				    ((adev->pdev->revision == 0x87) &&
+				     ((adev->pdev->device == 0x6823) ||
+				      (adev->pdev->device == 0x682b))))
+					strscpy(fw_name, "amdgpu/verde_k_smc.bin");
+				else
+					strscpy(fw_name, "amdgpu/verde_smc.bin");
+				break;
+			case CHIP_OLAND:
+				if (((adev->pdev->revision == 0x81) &&
+				     ((adev->pdev->device == 0x6600) ||
+				      (adev->pdev->device == 0x6604) ||
+				      (adev->pdev->device == 0x6605) ||
+				      (adev->pdev->device == 0x6610))) ||
+				    ((adev->pdev->revision == 0x83) &&
+				     (adev->pdev->device == 0x6610)))
+					strscpy(fw_name, "amdgpu/oland_k_smc.bin");
+				else
+					strscpy(fw_name, "amdgpu/oland_smc.bin");
+				break;
+			case CHIP_HAINAN:
+				if (((adev->pdev->revision == 0x81) &&
+				     (adev->pdev->device == 0x6660)) ||
+				    ((adev->pdev->revision == 0x83) &&
+				     ((adev->pdev->device == 0x6660) ||
+				      (adev->pdev->device == 0x6663) ||
+				      (adev->pdev->device == 0x6665) ||
+				      (adev->pdev->device == 0x6667))))
+					strscpy(fw_name, "amdgpu/hainan_k_smc.bin");
+				else if ((adev->pdev->revision == 0xc3) &&
+					 (adev->pdev->device == 0x6665))
+					strscpy(fw_name, "amdgpu/banks_k_2_smc.bin");
+				else
+					strscpy(fw_name, "amdgpu/hainan_smc.bin");
+				break;
 			case CHIP_BONAIRE:
 				if ((adev->pdev->revision == 0x80) ||
 					(adev->pdev->revision == 0x81) ||

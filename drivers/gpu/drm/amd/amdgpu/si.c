@@ -2692,6 +2692,33 @@ static const struct amdgpu_ip_block_version si_common_ip_block =
 	.funcs = &si_common_ip_funcs,
 };
 
+/* Which DPM backend this SI die gets: the PowerPlay si_hwmgr port or the
+ * legacy si_dpm block. amdgpu.si_powerplay overrides the default, which
+ * is PowerPlay only where it has been validated on hardware.
+ */
+static bool si_use_powerplay(struct amdgpu_device *adev)
+{
+	bool validated = adev->asic_type == CHIP_OLAND;
+
+	if (amdgpu_si_powerplay == 0)
+		return false;
+	if (amdgpu_si_powerplay > 0) {
+		if (!validated)
+			dev_info(adev->dev,
+				 "si: PowerPlay DPM on an unvalidated SI die, si_powerplay=0 selects legacy si_dpm\n");
+		return true;
+	}
+	return validated;
+}
+
+static void si_add_smu_ip_block(struct amdgpu_device *adev)
+{
+	if (si_use_powerplay(adev))
+		amdgpu_device_ip_block_add(adev, &pp_smu_ip_block);
+	else
+		amdgpu_device_ip_block_add(adev, &si_smu_ip_block);
+}
+
 int si_set_ip_blocks(struct amdgpu_device *adev)
 {
 	switch (adev->asic_type) {
@@ -2703,7 +2730,7 @@ int si_set_ip_blocks(struct amdgpu_device *adev)
 		amdgpu_device_ip_block_add(adev, &si_ih_ip_block);
 		amdgpu_device_ip_block_add(adev, &gfx_v6_0_ip_block);
 		amdgpu_device_ip_block_add(adev, &si_dma_ip_block);
-		amdgpu_device_ip_block_add(adev, &si_smu_ip_block);
+		si_add_smu_ip_block(adev);
 		if (adev->enable_virtual_display)
 			amdgpu_device_ip_block_add(adev, &amdgpu_vkms_ip_block);
 #if defined(CONFIG_DRM_AMD_DC) && defined(CONFIG_DRM_AMD_DC_SI)
@@ -2721,7 +2748,7 @@ int si_set_ip_blocks(struct amdgpu_device *adev)
 		amdgpu_device_ip_block_add(adev, &si_ih_ip_block);
 		amdgpu_device_ip_block_add(adev, &gfx_v6_0_ip_block);
 		amdgpu_device_ip_block_add(adev, &si_dma_ip_block);
-		amdgpu_device_ip_block_add(adev, &si_smu_ip_block);
+		si_add_smu_ip_block(adev);
 		if (adev->enable_virtual_display)
 			amdgpu_device_ip_block_add(adev, &amdgpu_vkms_ip_block);
 #if defined(CONFIG_DRM_AMD_DC) && defined(CONFIG_DRM_AMD_DC_SI)
@@ -2738,7 +2765,7 @@ int si_set_ip_blocks(struct amdgpu_device *adev)
 		amdgpu_device_ip_block_add(adev, &si_ih_ip_block);
 		amdgpu_device_ip_block_add(adev, &gfx_v6_0_ip_block);
 		amdgpu_device_ip_block_add(adev, &si_dma_ip_block);
-		amdgpu_device_ip_block_add(adev, &si_smu_ip_block);
+		si_add_smu_ip_block(adev);
 		if (adev->enable_virtual_display)
 			amdgpu_device_ip_block_add(adev, &amdgpu_vkms_ip_block);
 		break;

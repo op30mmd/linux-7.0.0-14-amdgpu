@@ -2236,7 +2236,12 @@ static int si_calculate_adjusted_tdp_limits(struct amdgpu_device *adev,
 	max_tdp_limit = ((100 + 100) * adev->pm.dpm.tdp_limit) / 100;
 
 	if (adjust_polarity) {
-		*tdp_limit = ((100 + tdp_adjustment) * adev->pm.dpm.tdp_limit) / 100;
+		/* Round to nearest so the programmed SMC limit matches the
+		 * requested gain (floor division would systematically
+		 * under-deliver by up to ~1W).
+		 */
+		*tdp_limit = DIV_ROUND_CLOSEST((100 + tdp_adjustment) *
+					       adev->pm.dpm.tdp_limit, 100);
 		*near_tdp_limit = adev->pm.dpm.near_tdp_limit_adjusted + (*tdp_limit - adev->pm.dpm.tdp_limit);
 	} else {
 		*tdp_limit = ((100 - tdp_adjustment) * adev->pm.dpm.tdp_limit) / 100;
@@ -2274,7 +2279,7 @@ static int si_populate_smc_tdp_limits(struct amdgpu_device *adev,
 			return -EINVAL;
 
 		ret = si_calculate_adjusted_tdp_limits(adev,
-						       false, /* ??? */
+						       adev->asic_type == CHIP_OLAND,
 						       adev->pm.dpm.tdp_adjustment,
 						       &tdp_limit,
 						       &near_tdp_limit);
@@ -3684,6 +3689,64 @@ static void si_apply_state_adjust_rules(struct amdgpu_device *adev,
 					      max_limits->vddc, max_limits->vddci,
 					      &ps->performance_levels[i].vddc,
 					      &ps->performance_levels[i].vddci);
+	}
+
+	/* Oland OverDrive: allow top performance level to exceed stock
+	 * limits up to SI_OLAND_OD_SCLK_MAX / SI_OLAND_OD_MCLK_MAX.
+	 * od_sclk/od_mclk are in 10 kHz units, 0 = disabled.
+	 *
+	 * OD levels intentionally exceed the stock voltage-mapped and
+	 * board maxima above, matching Windows (ADL OD caps come from
+	 * the same VBIOS PPTable). Requested clocks are never reduced
+	 * here. Voltage is still raised to match via the dependency
+	 * rules below. MCLK OD with an active display does not switch:
+	 * every level is pinned to the OD MCLK instead, mirroring the
+	 * disable_mclk_switching handling above - a mid-frame memory
+	 * clock switch is what hangs the gfx ring, not the clock itself.
+	 */
+	if (adev->asic_type == CHIP_OLAND && ps->performance_level_count) {
+		struct si_power_info *si_pi = si_get_pi(adev);
+		int top = ps->performance_level_count - 1;
+
+		if (si_pi->od_sclk) {
+			u32 od_sclk = min(si_pi->od_sclk, (u32)SI_OLAND_OD_SCLK_MAX);
+
+			ps->performance_levels[top].sclk = od_sclk;
+			ps->performance_levels[top].vddc = max_limits->vddc;
+			btc_apply_voltage_dependency_rules(
+				&adev->pm.dpm.dyn_state.vddc_dependency_on_sclk,
+				od_sclk, max_limits->vddc,
+				&ps->performance_levels[top].vddc);
+		}
+		if (si_pi->od_mclk) {
+			u32 od_mclk = min(si_pi->od_mclk, (u32)SI_OLAND_OD_MCLK_MAX);
+
+			if (disable_mclk_switching) {
+				for (i = 0; i < ps->performance_level_count; i++) {
+					ps->performance_levels[i].mclk = od_mclk;
+					ps->performance_levels[i].vddci = max_limits->vddci;
+					btc_apply_voltage_dependency_rules(
+						&adev->pm.dpm.dyn_state.vddci_dependency_on_mclk,
+						od_mclk, max_limits->vddci,
+						&ps->performance_levels[i].vddci);
+					btc_apply_voltage_dependency_rules(
+						&adev->pm.dpm.dyn_state.vddc_dependency_on_mclk,
+						od_mclk, max_limits->vddc,
+						&ps->performance_levels[i].vddc);
+				}
+			} else {
+				ps->performance_levels[top].mclk = od_mclk;
+				ps->performance_levels[top].vddci = max_limits->vddci;
+				btc_apply_voltage_dependency_rules(
+					&adev->pm.dpm.dyn_state.vddci_dependency_on_mclk,
+					od_mclk, max_limits->vddci,
+					&ps->performance_levels[top].vddci);
+				btc_apply_voltage_dependency_rules(
+					&adev->pm.dpm.dyn_state.vddc_dependency_on_mclk,
+					od_mclk, max_limits->vddc,
+					&ps->performance_levels[top].vddc);
+			}
+		}
 	}
 
 	ps->dc_compatible = true;
@@ -6725,7 +6788,6 @@ static int si_dpm_get_fan_control_mode(void *handle, u32 *fan_mode)
 	return 0;
 }
 
-#if 0
 static int si_fan_ctrl_get_fan_speed_rpm(struct amdgpu_device *adev,
 					 u32 *speed)
 {
@@ -6775,7 +6837,29 @@ static int si_fan_ctrl_set_fan_speed_rpm(struct amdgpu_device *adev,
 
 	return 0;
 }
-#endif
+
+static int si_dpm_get_fan_speed_rpm(void *handle, u32 *speed)
+{
+	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
+
+	if (!speed)
+		return -EINVAL;
+	/* Tachometer readout is only validated on Oland; keep the
+	 * historical -EOPNOTSUPP behavior on other SI ASICs.
+	 */
+	if (adev->asic_type != CHIP_OLAND)
+		return -EOPNOTSUPP;
+	return si_fan_ctrl_get_fan_speed_rpm(adev, speed);
+}
+
+static int si_dpm_set_fan_speed_rpm(void *handle, u32 speed)
+{
+	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
+
+	if (adev->asic_type != CHIP_OLAND)
+		return -EOPNOTSUPP;
+	return si_fan_ctrl_set_fan_speed_rpm(adev, speed);
+}
 
 static void si_fan_ctrl_set_default_mode(struct amdgpu_device *adev)
 {
@@ -7443,6 +7527,18 @@ static int si_dpm_init(struct amdgpu_device *adev)
 	if (ret)
 		return ret;
 
+	/* Oland OverDrive: guarantee +20% TDP headroom even if the
+	 * BIOS PowerPlay table reports a smaller (or zero) OD limit.
+	 */
+	if (adev->asic_type == CHIP_OLAND) {
+		if (adev->pm.dpm.tdp_od_limit < SI_OLAND_OD_TDP_MAX) {
+			adev->pm.dpm.tdp_od_limit = SI_OLAND_OD_TDP_MAX;
+			adev->pm.dpm.power_control = true;
+		}
+		si_pi->od_sclk = 0;
+		si_pi->od_mclk = 0;
+	}
+
 	adev->pm.dpm.dyn_state.vddc_dependency_on_dispclk.entries =
 		kzalloc_objs(struct amdgpu_clock_voltage_dependency_entry, 4);
 	if (!adev->pm.dpm.dyn_state.vddc_dependency_on_dispclk.entries)
@@ -7567,6 +7663,84 @@ static void si_dpm_fini(struct amdgpu_device *adev)
 	kfree(adev->pm.dpm.priv);
 	kfree(adev->pm.dpm.dyn_state.vddc_dependency_on_dispclk.entries);
 	amdgpu_free_extended_power_table(adev);
+}
+
+bool si_oland_is_overdrive_supported(struct amdgpu_device *adev)
+{
+	return adev->asic_type == CHIP_OLAND;
+}
+
+int si_oland_get_sclk_od(struct amdgpu_device *adev)
+{
+	struct si_power_info *si_pi = si_get_pi(adev);
+
+	if (!si_oland_is_overdrive_supported(adev))
+		return -EOPNOTSUPP;
+	return (si_pi->od_sclk / 100);
+}
+
+int si_oland_set_sclk_od(struct amdgpu_device *adev, u32 value)
+{
+	struct si_power_info *si_pi = si_get_pi(adev);
+	u32 od_clk;
+
+	if (!si_oland_is_overdrive_supported(adev))
+		return -EOPNOTSUPP;
+	if (value == 0) {
+		si_pi->od_sclk = 0;
+		return 0;
+	}
+	od_clk = value * 100;
+	if (od_clk > SI_OLAND_OD_SCLK_MAX)
+		return -EINVAL;
+	si_pi->od_sclk = od_clk;
+	return 0;
+}
+
+int si_oland_get_mclk_od(struct amdgpu_device *adev)
+{
+	struct si_power_info *si_pi = si_get_pi(adev);
+
+	if (!si_oland_is_overdrive_supported(adev))
+		return -EOPNOTSUPP;
+	return (si_pi->od_mclk / 100);
+}
+
+int si_oland_set_mclk_od(struct amdgpu_device *adev, u32 value)
+{
+	struct si_power_info *si_pi = si_get_pi(adev);
+	u32 od_clk;
+
+	if (!si_oland_is_overdrive_supported(adev))
+		return -EOPNOTSUPP;
+	if (value == 0) {
+		si_pi->od_mclk = 0;
+		return 0;
+	}
+	od_clk = value * 100;
+	if (od_clk > SI_OLAND_OD_MCLK_MAX)
+		return -EINVAL;
+	si_pi->od_mclk = od_clk;
+	return 0;
+}
+
+int si_oland_get_tdp_od(struct amdgpu_device *adev)
+{
+	if (!si_oland_is_overdrive_supported(adev))
+		return -EOPNOTSUPP;
+	return (int)adev->pm.dpm.tdp_adjustment;
+}
+
+int si_oland_set_tdp_od(struct amdgpu_device *adev, u32 value)
+{
+	if (!si_oland_is_overdrive_supported(adev))
+		return -EOPNOTSUPP;
+	if (value > SI_OLAND_OD_TDP_MAX)
+		return -EINVAL;
+	if (value > (u32)adev->pm.dpm.tdp_od_limit)
+		return -EINVAL;
+	adev->pm.dpm.tdp_adjustment = value;
+	return 0;
 }
 
 static void si_dpm_debugfs_print_current_performance_level(void *handle,
@@ -7968,6 +8142,93 @@ static u32 si_dpm_get_mclk(void *handle, bool low)
 		return requested_state->performance_levels[requested_state->performance_level_count - 1].mclk;
 }
 
+static int si_dpm_get_sclk_od(void *handle)
+{
+	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
+
+	/* For SI Oland, pp_sclk_od is absolute MHz (0 = disabled),
+	 * max 1000 MHz. Differs from CI percent-based OD. */
+	return si_oland_get_sclk_od(adev);
+}
+
+static int si_dpm_set_sclk_od(void *handle, uint32_t value)
+{
+	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
+
+	/* value is MHz for Oland */
+	if (value > 1000)
+		return -EINVAL;
+	return si_oland_set_sclk_od(adev, value);
+}
+
+static int si_dpm_get_mclk_od(void *handle)
+{
+	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
+
+	return si_oland_get_mclk_od(adev);
+}
+
+static int si_dpm_set_mclk_od(void *handle, uint32_t value)
+{
+	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
+
+	if (value > 1300)
+		return -EINVAL;
+	return si_oland_set_mclk_od(adev, value);
+}
+
+static int si_dpm_get_power_limit(void *handle, uint32_t *limit,
+				  enum pp_power_limit_level pp_limit_level,
+				  enum pp_power_type power_type)
+{
+	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
+	u32 tdp = adev->pm.dpm.tdp_limit;
+
+	if (adev->asic_type != CHIP_OLAND)
+		return -EOPNOTSUPP;
+	if (!tdp)
+		return -EINVAL;
+
+	switch (pp_limit_level) {
+	case PP_PWR_LIMIT_DEFAULT:
+		*limit = tdp;
+		break;
+	case PP_PWR_LIMIT_MIN:
+		*limit = tdp;
+		break;
+	case PP_PWR_LIMIT_MAX:
+		*limit = DIV_ROUND_CLOSEST(tdp * (100 + SI_OLAND_OD_TDP_MAX), 100);
+		break;
+	case PP_PWR_LIMIT_CURRENT:
+		*limit = DIV_ROUND_CLOSEST(tdp * (100 + adev->pm.dpm.tdp_adjustment), 100);
+		break;
+	default:
+		return -EINVAL;
+	}
+	return 0;
+}
+
+static int si_dpm_set_power_limit(void *handle, uint32_t limit_type, uint32_t limit)
+{
+	struct amdgpu_device *adev = (struct amdgpu_device *)handle;
+	u32 tdp = adev->pm.dpm.tdp_limit;
+	u32 adjust;
+
+	if (adev->asic_type != CHIP_OLAND)
+		return -EOPNOTSUPP;
+	if (!tdp)
+		return -EINVAL;
+	/* limit is in Watts (amdgpu_pm converts from uW) */
+	if (limit < tdp)
+		return -EINVAL;
+	/* Round to nearest percent so the applied gain matches the
+	 * requested limit (floor division would keep up to ~1W of
+	 * requested headroom unapplied).
+	 */
+	adjust = DIV_ROUND_CLOSEST((limit - tdp) * 100, tdp);
+	return si_oland_set_tdp_od(adev, adjust);
+}
+
 static void si_dpm_print_power_state(void *handle,
 				     void *current_ps)
 {
@@ -8136,9 +8397,17 @@ static const struct amd_pm_funcs si_dpm_funcs = {
 	.get_fan_control_mode = &si_dpm_get_fan_control_mode,
 	.set_fan_speed_pwm = &si_dpm_set_fan_speed_pwm,
 	.get_fan_speed_pwm = &si_dpm_get_fan_speed_pwm,
+	.set_fan_speed_rpm = &si_dpm_set_fan_speed_rpm,
+	.get_fan_speed_rpm = &si_dpm_get_fan_speed_rpm,
 	.check_state_equal = &si_check_state_equal,
 	.get_vce_clock_state = amdgpu_get_vce_clock_state,
 	.read_sensor = &si_dpm_read_sensor,
+	.get_sclk_od = &si_dpm_get_sclk_od,
+	.set_sclk_od = &si_dpm_set_sclk_od,
+	.get_mclk_od = &si_dpm_get_mclk_od,
+	.set_mclk_od = &si_dpm_set_mclk_od,
+	.get_power_limit = &si_dpm_get_power_limit,
+	.set_power_limit = &si_dpm_set_power_limit,
 	.pm_compute_clocks = amdgpu_legacy_dpm_compute_clocks,
 };
 

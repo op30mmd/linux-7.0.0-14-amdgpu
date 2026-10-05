@@ -28,6 +28,10 @@ SMU_MGR = smumgr.o smu8_smumgr.o tonga_smumgr.o fiji_smumgr.o \
 	  smu7_smumgr.o vega10_smumgr.o smu10_smumgr.o ci_smumgr.o \
 	  vega12_smumgr.o vegam_smumgr.o smu9_smumgr.o vega20_smumgr.o
 
+# Built alongside hwmgr/si_hwmgr.o; both need CONFIG_DRM_AMDGPU_SI.
+SMU_MGR-$(CONFIG_DRM_AMDGPU_SI) += si_smumgr.o
+SMU_MGR += $(SMU_MGR-y)
+
 AMD_PP_SMUMGR = $(addprefix $(AMD_PP_PATH)/smumgr/,$(SMU_MGR))
 
 AMD_POWERPLAY_FILES += $(AMD_PP_SMUMGR)

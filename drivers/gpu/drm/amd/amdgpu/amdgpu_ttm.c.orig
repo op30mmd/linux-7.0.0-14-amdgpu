@@ -1448,52 +1448,13 @@ uint64_t amdgpu_ttm_tt_pte_flags(struct amdgpu_device *adev, struct ttm_tt *ttm,
 }
 
 /*
- * amdgpu_bo_belongs_to_keep_pid - Check if a BO belongs to the protected PID
- *
- * @adev: amdgpu device
- * @abo: amdgpu BO to test
- *
- * A BO belongs to the protected PID if any of the VMs it is bound to has
- * task_info matching keep_vram_pid (either tgid or tid). Called with the
- * BO's dma_resv held, which stabilizes the vm_bo list against concurrent
- * amdgpu_vm_bo_del(). task_info integers are read with READ_ONCE as they
- * can be updated concurrently by amdgpu_vm_set_task_info() on CS.
- *
- * Return true if the BO must be kept in VRAM.
- */
-bool amdgpu_bo_belongs_to_keep_pid(struct amdgpu_device *adev,
-				    struct amdgpu_bo *abo)
-{
-	pid_t keep_pid = READ_ONCE(adev->keep_vram_pid);
-	struct amdgpu_vm_bo_base *base;
-
-	if (keep_pid <= 0)
-		return false;
-
-	for (base = abo->vm_bo; base; base = base->next) {
-		if (base->vm && base->vm->task_info) {
-			struct amdgpu_task_info *ti = base->vm->task_info;
-
-			if (READ_ONCE(ti->tgid) == keep_pid ||
-			    READ_ONCE(ti->task.pid) == keep_pid)
-				return true;
-		}
-	}
-	return false;
-}
-
-/*
  * amdgpu_ttm_bo_eviction_valuable - Check to see if we can evict a buffer
  * object.
  *
- * Return true if eviction is sensible. Called by TTM on behalf of
- * ttm_bo_mem_force_space() / ttm_bo_evict_alloc() which tries to evict buffer
- * objects until it can find space for a new object, and by ttm_bo_swapout().
- *
- * Note: ttm_resource_manager_evict_all() (used by amdgpu_ttm_evict_resources)
- * calls ttm_bo_evict_first() which does NOT consult eviction_valuable, so
- * bulk VRAM eviction must not use that helper when keep_vram_pid protection
- * is required. Use amdgpu_ttm_evict_vram_for_keep_pid() instead.
+ * Return true if eviction is sensible. Called by ttm_mem_evict_first() on
+ * behalf of ttm_bo_mem_force_space() which tries to evict buffer objects until
+ * it can find space for a new object and by ttm_bo_force_list_clean() which is
+ * used to clean out a memory space.
  */
 static bool amdgpu_ttm_bo_eviction_valuable(struct ttm_buffer_object *bo,
 					    const struct ttm_place *place)
@@ -1511,15 +1472,6 @@ static bool amdgpu_ttm_bo_eviction_valuable(struct ttm_buffer_object *bo,
 	if (bo->type == ttm_bo_type_kernel &&
 	    !amdgpu_vm_evictable(ttm_to_amdgpu_bo(bo)))
 		return false;
-
-	/* If keep_vram_pid is set, protect this PID's BOs from eviction */
-	if (bo->resource->mem_type == TTM_PL_VRAM) {
-		struct amdgpu_device *adev = amdgpu_ttm_adev(bo->bdev);
-
-		if (adev && amdgpu_bo_belongs_to_keep_pid(adev,
-							 ttm_to_amdgpu_bo(bo)))
-			return false;
-	}
 
 	/* If bo is a KFD BO, check if the bo belongs to the current process.
 	 * If true, then return false as any KFD process needs all its BOs to
@@ -2671,132 +2623,6 @@ int amdgpu_ttm_evict_resources(struct amdgpu_device *adev, int mem_type)
 	}
 
 	return ttm_resource_manager_evict_all(&adev->mman.bdev, man);
-}
-
-/*
- * amdgpu_ttm_evict_for_keep_pid_walk - LRU walk state for selective eviction
- * @walk: TTM LRU walk base; process_bo is called with the BO locked
- * @adev: amdgpu device carrying keep_vram_pid
- */
-struct amdgpu_ttm_evict_for_keep_pid_walk {
-	struct ttm_lru_walk walk;
-	struct amdgpu_device *adev;
-};
-
-/*
- * amdgpu_ttm_evict_for_keep_pid_cb - evict one BO unless protected by keep_vram_pid
- *
- * Called with @bo locked and referenced by ttm_lru_walk_for_evict().
- * Returns BO size on successful eviction (walk progress), 0 to skip this BO,
- * or a negative error for fatal failures.
- */
-static s64 amdgpu_ttm_evict_for_keep_pid_cb(struct ttm_lru_walk *walk,
-					    struct ttm_buffer_object *bo)
-{
-	struct amdgpu_ttm_evict_for_keep_pid_walk *ew =
-		container_of(walk, struct amdgpu_ttm_evict_for_keep_pid_walk, walk);
-	struct amdgpu_device *adev = ew->adev;
-	struct ttm_operation_ctx *ctx = walk->arg.ctx;
-	struct ttm_placement placement;
-	int ret;
-
-	/* Only VRAM is selectively evicted; walk is already VRAM-only. */
-	if (!bo->resource || bo->resource->mem_type != TTM_PL_VRAM)
-		return 0;
-
-	/* Never evict pinned or deleted BOs here. */
-	if (bo->pin_count || bo->deleted)
-		return 0;
-
-	/* Never move in-flight BOs: BOOKKEEP fences unsignaled means the GPU
-	 * may still be reading them. ttm_bo_validate() would wait in sysfs
-	 * context then move under executing IBs -> gfxhub fault at 0x0 and
-	 * CP stall (see crashes 20261004-003247 / 20261004-010820, 2-3s after
-	 * keep_vram_pid store, signaled = emitted - 3). Skip instead.
-	 */
-	if (!dma_resv_test_signaled(bo->base.resv, DMA_RESV_USAGE_BOOKKEEP))
-		return 0;
-
-	if (amdgpu_bo_is_amdgpu_bo(bo)) {
-		struct amdgpu_bo *abo = ttm_to_amdgpu_bo(bo);
-
-		/* Keep the protected PID resident. */
-		if (amdgpu_bo_belongs_to_keep_pid(adev, abo))
-			return 0;
-
-		/* Respect page-table evictability like eviction_valuable(). */
-		if (bo->type == ttm_bo_type_kernel &&
-		    !amdgpu_vm_evictable(abo))
-			return 0;
-	} else {
-		/* For non-amdgpu BOs fall back to the generic valuable check. */
-		struct ttm_place place = { .mem_type = TTM_PL_VRAM };
-
-		if (!ttm_bo_eviction_valuable(bo, &place))
-			return 0;
-	}
-
-	/* Reuse the normal VRAM->GTT eviction destination. */
-	bo->bdev->funcs->evict_flags(bo, &placement);
-	ret = ttm_bo_validate(bo, &placement, ctx);
-	if (!ret)
-		return bo->base.size;
-
-	/* Non-fatal: busy / no space / pinned / interrupted -> skip this BO. */
-	if (ret == -ENOMEM || ret == -ENOSPC || ret == -EBUSY ||
-	    ret == -EINVAL || ret == -ERESTARTSYS || ret == -EINTR)
-		return 0;
-
-	return ret;
-}
-
-static const struct ttm_lru_walk_ops amdgpu_ttm_evict_keep_pid_ops = {
-	.process_bo = amdgpu_ttm_evict_for_keep_pid_cb,
-};
-
-/**
- * amdgpu_ttm_evict_vram_for_keep_pid - evict VRAM except protected PID's BOs
- * @adev: amdgpu device object
- *
- * Evicts all VRAM buffers to GTT/CPU except those belonging to
- * adev->keep_vram_pid. Unlike amdgpu_ttm_evict_resources() (which uses
- * ttm_resource_manager_evict_all() -> ttm_bo_evict_first() and bypasses
- * eviction_valuable), this walk honors the keep_vram_pid protection so that
- * "echo <pid> > keep_vram_pid" leaves <pid> resident while pushing
- * background buffers out.
- *
- * Returns:
- * 0 for success or a negative error code on fatal failure. Skipped (busy,
- * pinned, protected) BOs are not treated as errors.
- */
-int amdgpu_ttm_evict_vram_for_keep_pid(struct amdgpu_device *adev)
-{
-	struct ttm_resource_manager *man =
-		ttm_manager_type(&adev->mman.bdev, TTM_PL_VRAM);
-	struct ttm_operation_ctx ctx = { };
-	struct amdgpu_ttm_evict_for_keep_pid_walk ew = {
-		.walk = {
-			.ops = &amdgpu_ttm_evict_keep_pid_ops,
-			.arg = {
-				.ctx = &ctx,
-				.trylock_only = true,
-			},
-		},
-		.adev = adev,
-	};
-	s64 ret;
-
-	if (!man)
-		return -EINVAL;
-
-	/* Walk the whole VRAM LRU; progress is bytes evicted. */
-	ret = ttm_lru_walk_for_evict(&ew.walk, &adev->mman.bdev, man, LLONG_MAX);
-	/* -EBUSY/-EALREADY just mean "some BOs skipped", not fatal. */
-	if (ret == -EBUSY || ret == -EALREADY)
-		return 0;
-	if (ret < 0)
-		return ret;
-	return 0;
 }
 
 #if defined(CONFIG_DEBUG_FS)

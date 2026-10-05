@@ -637,6 +637,91 @@ module_param_named(si_support, amdgpu_si_support, int, 0444);
 #endif
 
 /**
+ * DOC: si_vreg_delay_us (uint)
+ * SI (PowerPlay backend) only: how long the SMC waits after commanding a
+ * VDDC change before it switches the engine clock, in microseconds
+ * (SI_SMC_SOFT_REGISTER_delay_vreg). 0 (default) uses the VBIOS value or
+ * 1000 when the VBIOS gives none. Boards whose regulator cannot slew a
+ * large VDDC step in that time hang the gfx ring on DPM up-transitions
+ * under load; raising this is the knob for that.
+ */
+unsigned int amdgpu_si_vreg_delay_us;
+#ifdef CONFIG_DRM_AMDGPU_SI
+MODULE_PARM_DESC(si_vreg_delay_us, "SI SMC VDDC settle delay in us before an sclk switch (0 = VBIOS/1000)");
+module_param_named(si_vreg_delay_us, amdgpu_si_vreg_delay_us, uint, 0444);
+#endif
+
+/**
+ * DOC: si_mclk_switching (int)
+ * SI (PowerPlay backend) only: whether the SMC may switch the memory
+ * clock between DPM levels while a display is active. -1 (default) lets
+ * the driver decide from the vblank length and display count, 0 pins
+ * every level to the top MCLK (no switching; costs idle power), 1 always
+ * allows it. A memory-clock switch that lands outside vblank hangs the
+ * gfx ring on some boards; 0 is the knob for that.
+ */
+int amdgpu_si_mclk_switching = -1;
+#ifdef CONFIG_DRM_AMDGPU_SI
+MODULE_PARM_DESC(si_mclk_switching, "SI MCLK switching with a display active (-1 = auto, 0 = never/pin top MCLK, 1 = always)");
+module_param_named(si_mclk_switching, amdgpu_si_mclk_switching, int, 0444);
+#endif
+
+/**
+ * DOC: si_dpm_quirks (uint)
+ * SI (PowerPlay backend) only, a bitmask of DPM experiments for boards
+ * that hang the gfx ring while the SMC steps through the DPM ladder
+ * under load:
+ *   0x01  no power containment      0x02  no CAC
+ *   0x04  no SQ ramping             0x08  no DTE
+ *   0x10  collapse levels 1..top-1 onto the top level (two-level DPM)
+ *   0x20  collapse only level top-1 onto the top level
+ *   0x40  run every level at the top level's VDDC (no voltage steps)
+ *   0x80  no engine clock spread spectrum
+ *   0x200 full VBIOS ladder with the level below the top scaled by the
+ *         OD ratios (engine and memory clock) at its stock voltage,
+ *         what Adrenalin OverDrive runs: PowerTune answers a power
+ *         virus with a level switch to it instead of pulse-skipping
+ *         the top level
+ *   0x100 keep the unscaled VBIOS ladder on boards that default to
+ *         0x200 (Oland 0x6611 rev 0x87: R7 350 / Radeon 430 / 520)
+ */
+/**
+ * DOC: si_fan_curve (charp)
+ * SI (PowerPlay backend) only: replace the VBIOS fan curve uploaded to
+ * the SMC, as "tmin,pwmmin,tmed,pwmmed,thigh,pwmhigh" with temperatures
+ * in C and duty cycles in percent. Empty (default) keeps the VBIOS
+ * curve. The SMC ramps linearly from (tmin,pwmmin) to (tmed,pwmmed) and
+ * on to (thigh,pwmhigh), holding pwmmin below tmin and 100% above thigh.
+ * Oland 0x6611 rev 0x87 runs 55,30,70,57,85,97 from its VBIOS, which is
+ * within ~3 points of what Adrenalin runs on the same board.
+ */
+/**
+ * DOC: si_powerplay (int)
+ * Which DPM backend SI dies use: -1 (default) the PowerPlay si_hwmgr
+ * port where it has been validated on hardware and the legacy si_dpm
+ * block elsewhere, 0 legacy everywhere, 1 PowerPlay everywhere. Only
+ * Oland is validated so far; the two are otherwise feature equivalent,
+ * so this is also the way to compare them on one card.
+ */
+int amdgpu_si_powerplay = -1;
+#ifdef CONFIG_DRM_AMDGPU_SI
+MODULE_PARM_DESC(si_powerplay, "SI DPM backend (-1 = PowerPlay where validated, 0 = legacy si_dpm, 1 = PowerPlay)");
+module_param_named(si_powerplay, amdgpu_si_powerplay, int, 0444);
+#endif
+
+char *amdgpu_si_fan_curve;
+#ifdef CONFIG_DRM_AMDGPU_SI
+MODULE_PARM_DESC(si_fan_curve, "SI fan curve override \"tmin,pwmmin,tmed,pwmmed,thigh,pwmhigh\" (C and percent, empty = VBIOS)");
+module_param_named(si_fan_curve, amdgpu_si_fan_curve, charp, 0444);
+#endif
+
+unsigned int amdgpu_si_dpm_quirks;
+#ifdef CONFIG_DRM_AMDGPU_SI
+MODULE_PARM_DESC(si_dpm_quirks, "SI DPM quirk bitmask (0x01 no powercontainment, 0x02 no CAC, 0x04 no SQ ramping, 0x08 no DTE, 0x10 two-level ladder, 0x20 drop level top-1, 0x40 single VDDC, 0x80 no sclk SS, 0x100 unscaled ladder on boards defaulting to 0x200, 0x200 OD-scaled level below top)");
+module_param_named(si_dpm_quirks, amdgpu_si_dpm_quirks, uint, 0444);
+#endif
+
+/**
  * DOC: cik_support (int)
  * 1 = enabled, 0 = disabled, -1 = default
  *

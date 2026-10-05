@@ -196,6 +196,9 @@ struct si_power_info {
 	u32 t_min;
 	u32 fan_ctrl_default_mode;
 	bool fan_is_controlled_by_smc;
+	/* OverDrive (Oland only, 10 kHz units, 0 = disabled) */
+	u32 od_sclk;
+	u32 od_mclk;
 };
 
 #define SISLANDS_INITIAL_STATE_ARB_INDEX    0
@@ -204,6 +207,14 @@ struct si_power_info {
 #define SISLANDS_DRIVER_STATE_ARB_INDEX     3
 
 #define SISLANDS_DPM2_MAX_PULSE_SKIP        256
+
+/* SI Oland OverDrive limits.
+ * Clocks are in 10 kHz units (100000 = 1000 MHz).
+ * TDP limit is in percent (+20 = +20%).
+ */
+#define SI_OLAND_OD_SCLK_MAX	100000
+#define SI_OLAND_OD_MCLK_MAX	130000
+#define SI_OLAND_OD_TDP_MAX	20
 
 #define SISLANDS_DPM2_NEAR_TDP_DEC          10
 #define SISLANDS_DPM2_ABOVE_SAFE_INC        5
@@ -232,5 +243,14 @@ u8 si_get_mclk_frequency_ratio(u32 memory_clock, bool strobe_mode);
 void si_trim_voltage_table_to_fit_state_table(struct radeon_device *rdev,
 					      u32 max_voltage_steps,
 					      struct atom_voltage_table *voltage_table);
+
+/* Oland OverDrive helpers */
+bool si_oland_is_overdrive_supported(struct radeon_device *rdev);
+int si_oland_get_sclk_od(struct radeon_device *rdev);
+int si_oland_set_sclk_od(struct radeon_device *rdev, u32 value);
+int si_oland_get_mclk_od(struct radeon_device *rdev);
+int si_oland_set_mclk_od(struct radeon_device *rdev, u32 value);
+int si_oland_get_tdp_od(struct radeon_device *rdev);
+int si_oland_set_tdp_od(struct radeon_device *rdev, u32 value);
 
 #endif

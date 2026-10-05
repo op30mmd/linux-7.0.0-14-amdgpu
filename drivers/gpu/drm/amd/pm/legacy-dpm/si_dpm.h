@@ -71,6 +71,13 @@
 
 #define SISLANDS_DPM2_MAX_PULSE_SKIP        256
 
+/* SI Oland OverDrive limits (shared with radeon).
+ * Clocks in 10 kHz units (100000 = 1000 MHz), TDP in percent.
+ */
+#define SI_OLAND_OD_SCLK_MAX	100000
+#define SI_OLAND_OD_MCLK_MAX	130000
+#define SI_OLAND_OD_TDP_MAX	20
+
 #define SISLANDS_DPM2_NEAR_TDP_DEC          10
 #define SISLANDS_DPM2_ABOVE_SAFE_INC        5
 #define SISLANDS_DPM2_BELOW_SAFE_INC        20
@@ -460,6 +467,17 @@ struct si_power_info {
 	u32 t_min;
 	u32 fan_ctrl_default_mode;
 	bool fan_is_controlled_by_smc;
+	/* OverDrive (Oland only, 10 kHz units, 0 = disabled) */
+	u32 od_sclk;
+	u32 od_mclk;
 };
+
+bool si_oland_is_overdrive_supported(struct amdgpu_device *adev);
+int si_oland_get_sclk_od(struct amdgpu_device *adev);
+int si_oland_set_sclk_od(struct amdgpu_device *adev, u32 value);
+int si_oland_get_mclk_od(struct amdgpu_device *adev);
+int si_oland_set_mclk_od(struct amdgpu_device *adev, u32 value);
+int si_oland_get_tdp_od(struct amdgpu_device *adev);
+int si_oland_set_tdp_od(struct amdgpu_device *adev, u32 value);
 
 #endif

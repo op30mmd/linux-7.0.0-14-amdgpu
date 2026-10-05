@@ -42,6 +42,12 @@
 #define DP_ADAPTOR_DVI_MAX_TMDS_CLK 165000
 /* kHZ*/
 #define DP_ADAPTOR_HDMI_SAFE_MAX_TMDS_CLK 340000
+/* kHz - Oland (DCE 6.4) quirk: passive DP dongles without an HDMI
+ * signature are treated as single-link DVI (165MHz), which prunes
+ * 1920x1080@75 (174.88MHz). The monitor range allows up to 200MHz
+ * and the HW HDMI limit is 297MHz, so allow 200MHz on Oland.
+ */
+#define DP_ADAPTOR_OLAND_DVI_MAX_TMDS_CLK 200000
 
 struct dp_hdmi_dongle_signature_data {
 	int8_t id[15];/* "DP-HDMI ADAPTOR"*/

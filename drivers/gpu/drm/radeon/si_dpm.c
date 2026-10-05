@@ -2069,7 +2069,12 @@ static int si_calculate_adjusted_tdp_limits(struct radeon_device *rdev,
 	max_tdp_limit = ((100 + 100) * rdev->pm.dpm.tdp_limit) / 100;
 
 	if (adjust_polarity) {
-		*tdp_limit = ((100 + tdp_adjustment) * rdev->pm.dpm.tdp_limit) / 100;
+		/* Round to nearest so the programmed SMC limit matches the
+		 * requested gain (floor division would systematically
+		 * under-deliver by up to ~1W).
+		 */
+		*tdp_limit = DIV_ROUND_CLOSEST((100 + tdp_adjustment) *
+					       rdev->pm.dpm.tdp_limit, 100);
 		*near_tdp_limit = rdev->pm.dpm.near_tdp_limit_adjusted + (*tdp_limit - rdev->pm.dpm.tdp_limit);
 	} else {
 		*tdp_limit = ((100 - tdp_adjustment) * rdev->pm.dpm.tdp_limit) / 100;
@@ -2108,8 +2113,12 @@ static int si_populate_smc_tdp_limits(struct radeon_device *rdev,
 
 		memset(smc_table, 0, sizeof(SISLANDS_SMC_STATETABLE));
 
+		/* Oland OverDrive uses positive adjustment to raise the
+		 * limit (+20%), other ASICs keep legacy decrease-only
+		 * behaviour for compatibility.
+		 */
 		ret = si_calculate_adjusted_tdp_limits(rdev,
-						       false, /* ??? */
+						       rdev->family == CHIP_OLAND,
 						       rdev->pm.dpm.tdp_adjustment,
 						       &tdp_limit,
 						       &near_tdp_limit);
@@ -3114,6 +3123,41 @@ static void si_apply_state_adjust_rules(struct radeon_device *rdev,
 					      max_limits->vddc, max_limits->vddci,
 					      &ps->performance_levels[i].vddc,
 					      &ps->performance_levels[i].vddci);
+	}
+
+	/* Oland OverDrive: allow top performance level to exceed stock
+	 * limits up to SI_OLAND_OD_SCLK_MAX / SI_OLAND_OD_MCLK_MAX.
+	 * od_sclk/od_mclk are in 10 kHz units, 0 = disabled.
+	 */
+	if (rdev->family == CHIP_OLAND && ps->performance_level_count) {
+		struct si_power_info *si_pi = si_get_pi(rdev);
+		int top = ps->performance_level_count - 1;
+
+		if (si_pi->od_sclk) {
+			u32 od_sclk = min(si_pi->od_sclk, (u32)SI_OLAND_OD_SCLK_MAX);
+
+			ps->performance_levels[top].sclk = od_sclk;
+			/* run OD level at max allowed voltage for stability */
+			ps->performance_levels[top].vddc = max_limits->vddc;
+			btc_apply_voltage_dependency_rules(
+				&rdev->pm.dpm.dyn_state.vddc_dependency_on_sclk,
+				od_sclk, max_limits->vddc,
+				&ps->performance_levels[top].vddc);
+		}
+		if (si_pi->od_mclk) {
+			u32 od_mclk = min(si_pi->od_mclk, (u32)SI_OLAND_OD_MCLK_MAX);
+
+			ps->performance_levels[top].mclk = od_mclk;
+			ps->performance_levels[top].vddci = max_limits->vddci;
+			btc_apply_voltage_dependency_rules(
+				&rdev->pm.dpm.dyn_state.vddci_dependency_on_mclk,
+				od_mclk, max_limits->vddci,
+				&ps->performance_levels[top].vddci);
+			btc_apply_voltage_dependency_rules(
+				&rdev->pm.dpm.dyn_state.vddc_dependency_on_mclk,
+				od_mclk, max_limits->vddc,
+				&ps->performance_levels[top].vddc);
+		}
 	}
 
 	ps->dc_compatible = true;
@@ -6899,6 +6943,20 @@ int si_dpm_init(struct radeon_device *rdev)
 	if (ret)
 		return ret;
 
+	/* Oland OverDrive: guarantee +20% TDP headroom even if the
+	 * BIOS PowerPlay table reports a smaller (or zero) OD limit.
+	 * Clocks are additionally capped to SI_OLAND_OD_SCLK_MAX /
+	 * SI_OLAND_OD_MCLK_MAX when OD values are programmed via sysfs.
+	 */
+	if (rdev->family == CHIP_OLAND) {
+		if (rdev->pm.dpm.tdp_od_limit < SI_OLAND_OD_TDP_MAX) {
+			rdev->pm.dpm.tdp_od_limit = SI_OLAND_OD_TDP_MAX;
+			rdev->pm.dpm.power_control = true;
+		}
+		si_pi->od_sclk = 0;
+		si_pi->od_mclk = 0;
+	}
+
 	rdev->pm.dpm.dyn_state.vddc_dependency_on_dispclk.entries =
 		kzalloc_objs(struct radeon_clock_voltage_dependency_entry, 4);
 	if (!rdev->pm.dpm.dyn_state.vddc_dependency_on_dispclk.entries) {
@@ -7029,10 +7087,89 @@ void si_dpm_fini(struct radeon_device *rdev)
 	r600_free_extended_power_table(rdev);
 }
 
+bool si_oland_is_overdrive_supported(struct radeon_device *rdev)
+{
+	return rdev->family == CHIP_OLAND;
+}
+
+int si_oland_get_sclk_od(struct radeon_device *rdev)
+{
+	struct si_power_info *si_pi = si_get_pi(rdev);
+
+	if (!si_oland_is_overdrive_supported(rdev))
+		return -EOPNOTSUPP;
+	/* sysfs interface in MHz, driver stores 10 kHz */
+	return (si_pi->od_sclk / 100);
+}
+
+int si_oland_set_sclk_od(struct radeon_device *rdev, u32 value)
+{
+	struct si_power_info *si_pi = si_get_pi(rdev);
+	u32 od_clk;
+
+	if (!si_oland_is_overdrive_supported(rdev))
+		return -EOPNOTSUPP;
+	/* value is MHz, 0 disables OD */
+	if (value == 0) {
+		si_pi->od_sclk = 0;
+		return 0;
+	}
+	od_clk = value * 100;
+	if (od_clk > SI_OLAND_OD_SCLK_MAX)
+		return -EINVAL;
+	si_pi->od_sclk = od_clk;
+	return 0;
+}
+
+int si_oland_get_mclk_od(struct radeon_device *rdev)
+{
+	struct si_power_info *si_pi = si_get_pi(rdev);
+
+	if (!si_oland_is_overdrive_supported(rdev))
+		return -EOPNOTSUPP;
+	return (si_pi->od_mclk / 100);
+}
+
+int si_oland_set_mclk_od(struct radeon_device *rdev, u32 value)
+{
+	struct si_power_info *si_pi = si_get_pi(rdev);
+	u32 od_clk;
+
+	if (!si_oland_is_overdrive_supported(rdev))
+		return -EOPNOTSUPP;
+	if (value == 0) {
+		si_pi->od_mclk = 0;
+		return 0;
+	}
+	od_clk = value * 100;
+	if (od_clk > SI_OLAND_OD_MCLK_MAX)
+		return -EINVAL;
+	si_pi->od_mclk = od_clk;
+	return 0;
+}
+
+int si_oland_get_tdp_od(struct radeon_device *rdev)
+{
+	if (!si_oland_is_overdrive_supported(rdev))
+		return -EOPNOTSUPP;
+	return (int)rdev->pm.dpm.tdp_adjustment;
+}
+
+int si_oland_set_tdp_od(struct radeon_device *rdev, u32 value)
+{
+	if (!si_oland_is_overdrive_supported(rdev))
+		return -EOPNOTSUPP;
+	if (value > SI_OLAND_OD_TDP_MAX)
+		return -EINVAL;
+	if (value > (u32)rdev->pm.dpm.tdp_od_limit)
+		return -EINVAL;
+	rdev->pm.dpm.tdp_adjustment = value;
+	return 0;
+}
+
 void si_dpm_debugfs_print_current_performance_level(struct radeon_device *rdev,
 						    struct seq_file *m)
-{
-	struct evergreen_power_info *eg_pi = evergreen_get_pi(rdev);
+{	struct evergreen_power_info *eg_pi = evergreen_get_pi(rdev);
 	struct radeon_ps *rps = &eg_pi->current_rps;
 	struct ni_ps *ps = ni_get_ps(rps);
 	struct rv7xx_pl *pl;

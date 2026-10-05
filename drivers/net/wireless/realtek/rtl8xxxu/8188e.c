@@ -521,18 +521,14 @@ static void rtl8188eu_config_channel(struct ieee80211_hw *hw)
 	}
 }
 
-static void rtl8188eu_init_aggregation(struct rtl8xxxu_priv *priv)
-{
-	u8 agg_ctrl, usb_spec;
-
-	usb_spec = rtl8xxxu_read8(priv, REG_USB_SPECIAL_OPTION);
-	usb_spec &= ~USB_SPEC_USB_AGG_ENABLE;
-	rtl8xxxu_write8(priv, REG_USB_SPECIAL_OPTION, usb_spec);
-
-	agg_ctrl = rtl8xxxu_read8(priv, REG_TRXDMA_CTRL);
-	agg_ctrl &= ~TRXDMA_CTRL_RXDMA_AGG_EN;
-	rtl8xxxu_write8(priv, REG_TRXDMA_CTRL, agg_ctrl);
-}
+/*
+ * RX aggregation for RTL8188EU is opt-in via the common
+ * dma_aggregation module parameter (default off).
+ * Uses rtl8xxxu_gen1_init_aggregation, which keeps USB/RXDMA
+ * aggregation disabled unless dma_aggregation=1, matching the
+ * Windows INF default for most paths while allowing the
+ * UsbRxAggMode=2/PageCount=16 behaviour on request.
+ */
 
 static int rtl8188eu_parse_efuse(struct rtl8xxxu_priv *priv)
 {
@@ -1616,14 +1612,17 @@ static void rtl8188e_power_training_try_state(struct rtl8xxxu_ra_info *ra)
 
 	ra->pt_pre_rate = ra->decision_rate;
 
-	/* TODO: implement the "false alarm" statistics for this */
-	/* Disable power training when noisy environment */
-	/* if (p_dm_odm->is_disable_power_training) { */
-	if (1) {
-		ra->pt_stage = 0;
-		ra->ra_stage = 0;
-		ra->pt_stop_count = 0;
-	}
+	/*
+	 * Power training is explicitly disabled: this matches the Windows
+	 * INF TxPowerTraining=0 for USB\VID_2357&PID_0111
+	 * (TplinkDisTxPwrTrain_RTL8188eu). The vendor "false alarm" /
+	 * is_disable_power_training guard is not implemented here, so
+	 * keep the state machine parked at stage 0 until a per-device
+	 * quirk gates it.
+	 */
+	ra->pt_stage = 0;
+	ra->ra_stage = 0;
+	ra->pt_stop_count = 0;
 }
 
 static void rtl8188e_power_training_decision(struct rtl8xxxu_ra_info *ra)
@@ -1848,7 +1847,7 @@ struct rtl8xxxu_fileops rtl8188eu_fops = {
 	.config_channel = rtl8188eu_config_channel,
 	.parse_rx_desc = rtl8xxxu_parse_rxdesc16,
 	.parse_phystats = rtl8723au_rx_parse_phystats,
-	.init_aggregation = rtl8188eu_init_aggregation,
+	.init_aggregation = rtl8xxxu_gen1_init_aggregation,
 	.enable_rf = rtl8188e_enable_rf,
 	.disable_rf = rtl8188e_disable_rf,
 	.usb_quirks = rtl8188e_usb_quirks,
@@ -1863,6 +1862,13 @@ struct rtl8xxxu_fileops rtl8188eu_fops = {
 	.writeN_block_size = 196,
 	.rx_desc_size = sizeof(struct rtl8xxxu_rxdesc16),
 	.tx_desc_size = sizeof(struct rtl8xxxu_txdesc32),
+	/*
+	 * RX aggregation buffer, used only when the dma_aggregation
+	 * module parameter is set. Default (dma_aggregation=0) keeps
+	 * aggregation disabled, matching prior behaviour and the
+	 * Windows _NoRxAggregation fallback path.
+	 */
+	.rx_agg_buf_size = 16000,
 	.has_tx_report = 1,
 	.init_reg_pkt_life_time = 1,
 	.gen2_thermal_meter = 1,

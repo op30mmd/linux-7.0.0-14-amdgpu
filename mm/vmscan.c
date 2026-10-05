@@ -197,8 +197,11 @@ struct scan_control {
 
 /*
  * From 0 .. MAX_SWAPPINESS.  Higher means more swappy.
+ * Tuned for HP ProDesk 600 G1 (i5-4590, 4C/4T, 16GB RAM, SATA SSD root):
+ * 10 keeps interactive anon (GNOME/Firefox) in RAM, avoids SSD swap
+ * churn; ZSWAP (zstd, default on) already covers light pressure.
  */
-int vm_swappiness = 60;
+int vm_swappiness = 10;
 
 #ifdef CONFIG_MEMCG
 

@@ -34,6 +34,7 @@
 struct pp_hwmgr;
 struct phm_fan_speed_info;
 struct pp_atomctrl_voltage_table;
+struct drm_printer;
 
 #define VOLTAGE_SCALE 4
 #define VOLTAGE_VID_OFFSET_SCALE1   625
@@ -364,6 +365,12 @@ struct pp_hwmgr_func {
 					bool disable);
 	ssize_t (*get_gpu_metrics)(struct pp_hwmgr *hwmgr, void **table);
 	int (*gfx_state_change)(struct pp_hwmgr *hwmgr, uint32_t state);
+	/* GPU hang: snapshot the power management state before the reset
+	 * (dump_state), then print that snapshot into the devcoredump
+	 * (print_state)
+	 */
+	void (*dump_state)(struct pp_hwmgr *hwmgr);
+	void (*print_state)(struct pp_hwmgr *hwmgr, struct drm_printer *p);
 };
 
 struct pp_table_func {
@@ -829,6 +836,7 @@ int hwmgr_handle_task(struct pp_hwmgr *hwmgr,
 
 int smu7_init_function_pointers(struct pp_hwmgr *hwmgr);
 int smu8_init_function_pointers(struct pp_hwmgr *hwmgr);
+int si_init_function_pointers(struct pp_hwmgr *hwmgr);
 int vega12_hwmgr_init(struct pp_hwmgr *hwmgr);
 int vega20_hwmgr_init(struct pp_hwmgr *hwmgr);
 

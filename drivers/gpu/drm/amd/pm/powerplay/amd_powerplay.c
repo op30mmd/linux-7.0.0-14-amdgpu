@@ -246,6 +246,23 @@ static bool pp_is_idle(struct amdgpu_ip_block *ip_block)
 	return false;
 }
 
+static void pp_dump_ip_state(struct amdgpu_ip_block *ip_block)
+{
+	struct pp_hwmgr *hwmgr = ip_block->adev->powerplay.pp_handle;
+
+	if (hwmgr && hwmgr->hwmgr_func && hwmgr->hwmgr_func->dump_state)
+		hwmgr->hwmgr_func->dump_state(hwmgr);
+}
+
+static void pp_print_ip_state(struct amdgpu_ip_block *ip_block,
+			      struct drm_printer *p)
+{
+	struct pp_hwmgr *hwmgr = ip_block->adev->powerplay.pp_handle;
+
+	if (hwmgr && hwmgr->hwmgr_func && hwmgr->hwmgr_func->print_state)
+		hwmgr->hwmgr_func->print_state(hwmgr, p);
+}
+
 static int pp_set_powergating_state(struct amdgpu_ip_block *ip_block,
 				    enum amd_powergating_state state)
 {
@@ -289,6 +306,8 @@ static const struct amd_ip_funcs pp_ip_funcs = {
 	.is_idle = pp_is_idle,
 	.set_clockgating_state = pp_set_clockgating_state,
 	.set_powergating_state = pp_set_powergating_state,
+	.dump_ip_state = pp_dump_ip_state,
+	.print_ip_state = pp_print_ip_state,
 };
 
 const struct amdgpu_ip_block_version pp_smu_ip_block =

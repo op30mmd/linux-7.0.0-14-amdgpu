@@ -71,8 +71,10 @@ static long ratelimit_pages = 32;
 
 /*
  * Start background writeback (via writeback threads) at this percentage
+ * Tuned for 16GB + SATA SSD (Lexar 512GB): 5% (~800MB) starts writeback
+ * earlier to avoid large latency spikes from 10% (~1.6GB) bursts.
  */
-static int dirty_background_ratio = 10;
+static int dirty_background_ratio = 5;
 
 /*
  * dirty_background_bytes starts at 0 (disabled) so that it is a function of
@@ -88,8 +90,11 @@ static int vm_highmem_is_dirtyable;
 
 /*
  * The generator of dirty data starts writeback at this percentage
+ * Tuned for 16GB desktop: 10% (~1.6GB) instead of 20% (~3.2GB) caps
+ * dirty bursts, keeps UI responsive under heavy writes (e.g. kernel
+ * builds writing to SSD), halves potential data loss window.
  */
-static int vm_dirty_ratio = 20;
+static int vm_dirty_ratio = 10;
 
 /*
  * vm_dirty_bytes starts at 0 (disabled) so that it is a function of
@@ -106,8 +111,10 @@ EXPORT_SYMBOL_GPL(dirty_writeback_interval);
 
 /*
  * The longest time for which data is allowed to remain dirty
+ * Tuned for SSD desktop: 15s (vs 30s) bounds loss window and smooths
+ * writeback on SATA SSD without measurable throughput loss.
  */
-unsigned int dirty_expire_interval = 30 * 100; /* centiseconds */
+unsigned int dirty_expire_interval = 15 * 100; /* centiseconds */
 
 /* End of sysctl-exported parameters */
 

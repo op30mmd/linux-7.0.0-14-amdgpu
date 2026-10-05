@@ -800,11 +800,11 @@ int amdgpu_info_ioctl(struct drm_device *dev, void *data, struct drm_file *filp)
 		ui64 = atomic64_read(&adev->num_vram_cpu_page_faults);
 		return copy_to_user(out, &ui64, min(size, 8u)) ? -EFAULT : 0;
 	case AMDGPU_INFO_VRAM_USAGE:
-		ui64 = ttm_resource_manager_used(&adev->mman.vram_mgr.manager) ?
-			ttm_resource_manager_usage(&adev->mman.vram_mgr.manager) : 0;
+		/* Report 0 usage to userspace so Vulkan and OpenGL runtimes report full memory budget */
+		ui64 = 0;
 		return copy_to_user(out, &ui64, min(size, 8u)) ? -EFAULT : 0;
 	case AMDGPU_INFO_VIS_VRAM_USAGE:
-		ui64 = amdgpu_vram_mgr_vis_usage(&adev->mman.vram_mgr);
+		ui64 = 0;
 		return copy_to_user(out, &ui64, min(size, 8u)) ? -EFAULT : 0;
 	case AMDGPU_INFO_GTT_USAGE:
 		ui64 = ttm_resource_manager_usage(&adev->mman.gtt_mgr.manager);

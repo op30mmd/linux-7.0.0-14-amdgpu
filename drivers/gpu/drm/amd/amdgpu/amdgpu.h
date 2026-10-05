@@ -248,6 +248,31 @@ extern int amdgpu_reset_method;
 
 #ifdef CONFIG_DRM_AMDGPU_SI
 extern int amdgpu_si_support;
+extern unsigned int amdgpu_si_vreg_delay_us;
+extern int amdgpu_si_mclk_switching;
+extern unsigned int amdgpu_si_dpm_quirks;
+extern char *amdgpu_si_fan_curve;
+extern int amdgpu_si_powerplay;
+#define SI_QUIRK_NO_POWER_CONTAINMENT	0x01
+#define SI_QUIRK_NO_CAC			0x02
+#define SI_QUIRK_NO_SQ_RAMPING		0x04
+#define SI_QUIRK_NO_DTE			0x08
+#define SI_QUIRK_TWO_LEVEL_LADDER	0x10
+#define SI_QUIRK_DROP_LEVEL_BELOW_TOP	0x20
+#define SI_QUIRK_SINGLE_VDDC		0x40
+#define SI_QUIRK_NO_SCLK_SS		0x80
+#define SI_QUIRK_FULL_LADDER		0x100	/* opt out of a per-board two-level default */
+#define SI_QUIRK_SCALED_MID_LEVEL	0x200	/* full ladder, top-1 scaled by the OD ratios @ stock voltage */
+/* any quirk that shortens the VBIOS ladder: these share the
+ * threshold-rebuild handling
+ */
+#define SI_QUIRK_COLLAPSED_LADDER	(SI_QUIRK_TWO_LEVEL_LADDER |	\
+					 SI_QUIRK_DROP_LEVEL_BELOW_TOP)
+/* any quirk that reshapes the VBIOS ladder: these share the leakage
+ * and duplicate-level handling
+ */
+#define SI_QUIRK_RESHAPED_LADDER	(SI_QUIRK_COLLAPSED_LADDER |	\
+					 SI_QUIRK_SCALED_MID_LEVEL)
 #endif
 #ifdef CONFIG_DRM_AMDGPU_CIK
 extern int amdgpu_cik_support;
@@ -891,6 +916,7 @@ struct amdgpu_device {
 	struct dev_pm_domain		vga_pm_domain;
 	bool				have_disp_power_ref;
 	bool                            have_atomics_support;
+	pid_t				keep_vram_pid;
 
 	/* BIOS */
 	bool				is_atom_fw;

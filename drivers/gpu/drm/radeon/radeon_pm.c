@@ -34,6 +34,7 @@
 #include "r600_dpm.h"
 #include "radeon.h"
 #include "radeon_pm.h"
+#include "si_dpm.h"
 
 #define RADEON_IDLE_LOOP_MS 100
 #define RADEON_RECLOCK_DELAY_MS 200
@@ -665,6 +666,140 @@ static DEVICE_ATTR(power_dpm_state, S_IRUGO | S_IWUSR, radeon_get_dpm_state, rad
 static DEVICE_ATTR(power_dpm_force_performance_level, S_IRUGO | S_IWUSR,
 		   radeon_get_dpm_forced_performance_level,
 		   radeon_set_dpm_forced_performance_level);
+
+/*
+ * SI Oland OverDrive sysfs.
+ * - power_dpm_sclk_od: engine clock in MHz, 0 = disabled, max 1000
+ * - power_dpm_mclk_od: memory clock in MHz, 0 = disabled, max 1300
+ * - power_dpm_tdp_od: PowerTune adjustment in percent, 0-20
+ */
+static ssize_t radeon_get_od_sclk(struct device *dev,
+				  struct device_attribute *attr, char *buf)
+{
+	struct drm_device *ddev = dev_get_drvdata(dev);
+	struct radeon_device *rdev = ddev->dev_private;
+	int ret;
+
+	if (!si_oland_is_overdrive_supported(rdev))
+		return -EOPNOTSUPP;
+	ret = si_oland_get_sclk_od(rdev);
+	if (ret < 0)
+		return ret;
+	return sysfs_emit(buf, "%d\n", ret);
+}
+
+static ssize_t radeon_set_od_sclk(struct device *dev,
+				  struct device_attribute *attr,
+				  const char *buf, size_t count)
+{
+	struct drm_device *ddev = dev_get_drvdata(dev);
+	struct radeon_device *rdev = ddev->dev_private;
+	long value;
+	int ret;
+
+	ret = kstrtol(buf, 0, &value);
+	if (ret)
+		return ret;
+	if (value < 0 || value > 1000)
+		return -EINVAL;
+	mutex_lock(&rdev->pm.mutex);
+	ret = si_oland_set_sclk_od(rdev, (u32)value);
+	mutex_unlock(&rdev->pm.mutex);
+	if (ret)
+		return ret;
+	/* re-evaluate DPM state so the new top level takes effect */
+	mutex_lock(&rdev->pm.mutex);
+	radeon_pm_compute_clocks(rdev);
+	mutex_unlock(&rdev->pm.mutex);
+	return count;
+}
+
+static ssize_t radeon_get_od_mclk(struct device *dev,
+				  struct device_attribute *attr, char *buf)
+{
+	struct drm_device *ddev = dev_get_drvdata(dev);
+	struct radeon_device *rdev = ddev->dev_private;
+	int ret;
+
+	if (!si_oland_is_overdrive_supported(rdev))
+		return -EOPNOTSUPP;
+	ret = si_oland_get_mclk_od(rdev);
+	if (ret < 0)
+		return ret;
+	return sysfs_emit(buf, "%d\n", ret);
+}
+
+static ssize_t radeon_set_od_mclk(struct device *dev,
+				  struct device_attribute *attr,
+				  const char *buf, size_t count)
+{
+	struct drm_device *ddev = dev_get_drvdata(dev);
+	struct radeon_device *rdev = ddev->dev_private;
+	long value;
+	int ret;
+
+	ret = kstrtol(buf, 0, &value);
+	if (ret)
+		return ret;
+	if (value < 0 || value > 1300)
+		return -EINVAL;
+	mutex_lock(&rdev->pm.mutex);
+	ret = si_oland_set_mclk_od(rdev, (u32)value);
+	mutex_unlock(&rdev->pm.mutex);
+	if (ret)
+		return ret;
+	mutex_lock(&rdev->pm.mutex);
+	radeon_pm_compute_clocks(rdev);
+	mutex_unlock(&rdev->pm.mutex);
+	return count;
+}
+
+static ssize_t radeon_get_od_tdp(struct device *dev,
+				 struct device_attribute *attr, char *buf)
+{
+	struct drm_device *ddev = dev_get_drvdata(dev);
+	struct radeon_device *rdev = ddev->dev_private;
+	int ret;
+
+	if (!si_oland_is_overdrive_supported(rdev))
+		return -EOPNOTSUPP;
+	ret = si_oland_get_tdp_od(rdev);
+	if (ret < 0)
+		return ret;
+	return sysfs_emit(buf, "%d\n", ret);
+}
+
+static ssize_t radeon_set_od_tdp(struct device *dev,
+				 struct device_attribute *attr,
+				 const char *buf, size_t count)
+{
+	struct drm_device *ddev = dev_get_drvdata(dev);
+	struct radeon_device *rdev = ddev->dev_private;
+	long value;
+	int ret;
+
+	ret = kstrtol(buf, 0, &value);
+	if (ret)
+		return ret;
+	if (value < 0 || value > SI_OLAND_OD_TDP_MAX)
+		return -EINVAL;
+	mutex_lock(&rdev->pm.mutex);
+	ret = si_oland_set_tdp_od(rdev, (u32)value);
+	mutex_unlock(&rdev->pm.mutex);
+	if (ret)
+		return ret;
+	mutex_lock(&rdev->pm.mutex);
+	radeon_pm_compute_clocks(rdev);
+	mutex_unlock(&rdev->pm.mutex);
+	return count;
+}
+
+static DEVICE_ATTR(power_dpm_sclk_od, 0600,
+		   radeon_get_od_sclk, radeon_set_od_sclk);
+static DEVICE_ATTR(power_dpm_mclk_od, 0600,
+		   radeon_get_od_mclk, radeon_set_od_mclk);
+static DEVICE_ATTR(power_dpm_tdp_od, 0600,
+		   radeon_get_od_tdp, radeon_set_od_tdp);
 
 static ssize_t radeon_hwmon_show_temp(struct device *dev,
 				      struct device_attribute *attr,
@@ -1603,6 +1738,18 @@ int radeon_pm_late_init(struct radeon_device *rdev)
 				ret = device_create_file(rdev->dev, &dev_attr_power_method);
 				if (ret)
 					DRM_ERROR("failed to create device file for power method\n");
+				/* Oland OverDrive controls */
+				if (rdev->family == CHIP_OLAND) {
+					ret = device_create_file(rdev->dev, &dev_attr_power_dpm_sclk_od);
+					if (ret)
+						DRM_ERROR("failed to create device file for sclk od\n");
+					ret = device_create_file(rdev->dev, &dev_attr_power_dpm_mclk_od);
+					if (ret)
+						DRM_ERROR("failed to create device file for mclk od\n");
+					ret = device_create_file(rdev->dev, &dev_attr_power_dpm_tdp_od);
+					if (ret)
+						DRM_ERROR("failed to create device file for tdp od\n");
+				}
 				rdev->pm.sysfs_initialized = true;
 			}
 
@@ -1671,6 +1818,11 @@ static void radeon_pm_fini_dpm(struct radeon_device *rdev)
 
 		device_remove_file(rdev->dev, &dev_attr_power_dpm_state);
 		device_remove_file(rdev->dev, &dev_attr_power_dpm_force_performance_level);
+		if (rdev->family == CHIP_OLAND) {
+			device_remove_file(rdev->dev, &dev_attr_power_dpm_sclk_od);
+			device_remove_file(rdev->dev, &dev_attr_power_dpm_mclk_od);
+			device_remove_file(rdev->dev, &dev_attr_power_dpm_tdp_od);
+		}
 		/* XXX backwards compat */
 		device_remove_file(rdev->dev, &dev_attr_power_profile);
 		device_remove_file(rdev->dev, &dev_attr_power_method);

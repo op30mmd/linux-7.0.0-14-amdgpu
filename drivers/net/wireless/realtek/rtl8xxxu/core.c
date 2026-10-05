@@ -1958,10 +1958,14 @@ static int rtl8xxxu_start_firmware(struct rtl8xxxu_priv *priv)
 		val32 = rtl8xxxu_read32(priv, reg_mcu_fw_dl);
 		if (val32 & MCU_FW_DL_CSUM_REPORT)
 			break;
+
+		udelay(100);
 	}
 
 	if (i == RTL8XXXU_FIRMWARE_POLL_MAX) {
-		dev_warn(dev, "Firmware checksum poll timed out\n");
+		val32 = rtl8xxxu_read32(priv, reg_mcu_fw_dl);
+		dev_warn(dev, "Firmware checksum poll timed out (0x%08x)\n",
+			 val32);
 		ret = -EAGAIN;
 		goto exit;
 	}
@@ -1977,6 +1981,14 @@ static int rtl8xxxu_start_firmware(struct rtl8xxxu_priv *priv)
 	 */
 	priv->fops->reset_8051(priv);
 
+	/*
+	 * Cold-boot settle: the first probe after power-on was observed
+	 * to miss WINT_INIT_READY within the poll window while a warm
+	 * re-enumeration succeeded, so give the 8051 a moment before
+	 * polling.
+	 */
+	msleep(10);
+
 	/* Wait for firmware to become ready */
 	for (i = 0; i < RTL8XXXU_FIRMWARE_POLL_MAX; i++) {
 		val32 = rtl8xxxu_read32(priv, reg_mcu_fw_dl);
@@ -1987,7 +1999,7 @@ static int rtl8xxxu_start_firmware(struct rtl8xxxu_priv *priv)
 	}
 
 	if (i == RTL8XXXU_FIRMWARE_POLL_MAX) {
-		dev_warn(dev, "Firmware failed to start\n");
+		dev_warn(dev, "Firmware failed to start (0x%08x)\n", val32);
 		ret = -EAGAIN;
 		goto exit;
 	}
@@ -3971,8 +3983,14 @@ static int rtl8xxxu_init_device(struct ieee80211_hw *hw)
 	}
 	if (ret)
 		goto exit;
-	ret = rtl8xxxu_start_firmware(priv);
-	dev_dbg(dev, "%s: start_firmware %i\n", __func__, ret);
+	for (int retry = 3; retry >= 0; retry--) {
+		ret = rtl8xxxu_start_firmware(priv);
+		dev_dbg(dev, "%s: start_firmware %i\n", __func__, ret);
+		if (ret != -EAGAIN)
+			break;
+		if (retry)
+			dev_dbg(dev, "%s: retry firmware start\n", __func__);
+	}
 	if (ret)
 		goto exit;
 
